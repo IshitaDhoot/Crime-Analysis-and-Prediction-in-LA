@@ -1,0 +1,780 @@
+---
+title:  "Crime Analysis and Prediction in Los Angeles"
+subtitle: "Agam Goyal, Ishita Dhoot, Safa Eltgani, Harshita Narayanan"
+author: "University of Wisconsin - Madison"
+date:   "`r format(Sys.time(), '%B %d, %Y')`" # autogenerate date as date of last knit
+documentclass: article
+classoption: letterpaper
+output:
+  html_document:
+    highlight: tango
+    fig_caption: false
+---
+
+```{r echo = FALSE, warning = FALSE, message = FALSE}
+library(magrittr)
+library(tidyverse)
+library(dplyr)
+library(ggplot2)
+library(lubridate)
+library(ggmap)
+library(mapdata)
+library(varhandle)
+library(maps)
+library(data.table)
+library(ggrepel)
+library(scales)
+library(kableExtra)
+library(cowplot)
+library(randomForest)
+library(tree)
+```
+
+```{r echo = FALSE}
+theme_set(theme_bw(base_size = 16)) 
+```
+
+
+## Introduction
+
+
+> Not often do we analyze the importance of documenting and analyzing crimes. It is important to analyze crimes since it could potentially help law enforcement prevent a certain pattern of crimes from occurring. Besides prevention, it could also help the police officer responding to have a better idea in how to deescalate the situation. 
+
+> For this project, we chose to use the crimes that were documented in Los Angeles due to the abundance and accurate recordings of each of the crimes committed in the city. It is the goal of the LAPD to protect the lives and property of the Los Angeles community. One of the major milestones in fulfilling this goal is to reduce crime each year. The people involved in crimes are also of interest as we believe that certain ethnic groups and genders are more likely to be victims of a specific kind of crime. We feel that it is just as important to identify who crimes target in addition to when crimes occur.
+
+> Over the past year it is noticeable that certain types of crimes were committed either more or less frequently compared to the previous years due to the COVID-19 pandemic. We would like to identify some of the factors that could potentially have an association with they type of the crime that was committed and the area of the crime that was committed. 
+
+> Our aim is to explore relationships between demographic background of crime victims, time of the day, part of the year when the crimes are committed, and crime. We hope to identify crime patterns and create a prediction model so that incidents can be foreseen to an extent which will help LAPD be better prepared for them. 
+
+#### Question
+
+What factors influence the types of crimes committed and the number of crimes committed?
+
+
+#### Thesis Statement
+
+Various factors such as area (neighborhood of the crime), victim's sex, victim's race, season when the crime committed, and the hour when the crime was committed have an association with the number of crimes and the types of crimes committed in Los Angeles. 
+
+
+## Data
+
+The data we have used in this project is provided by the Los Angeles Police Department(LAPD) on the [Los Angeles Open Data](https://data.lacity.org/) website under the category of Public Safety. We used two datasets from the Open Data website, the first one with crime [data from 2010-2019](https://data.lacity.org/Public-Safety/Crime-Data-from-2010-to-2019/63jg-8b9z) and the second one with [data from 2020-2021](https://data.lacity.org/Public-Safety/Crime-Data-from-2020-to-Present/2nrs-mtv8).
+
+These datasets are updated weekly with any new information about old crimes as well as newly reported crimes, and the data we use for analysis is as it was on the 11th of April, when we downloaded it in [`.csv`](https://en.wikipedia.org/wiki/Comma-separated_values) format.
+
+Since we had two datasets and wanted to look at the crimes from 2010 to 2020, we had to combine the two datasets, which was straightforward as the format of reporting the data remained consistent over the years. We decided to drop out data for the year 2021 as it is still getting updated and the observations we had were low in number. The datasets had a lot of columns and more than 2 million rows of data. So we decided to look at columns that interested us the most. There were a total of 28 columns in the dataset originally and we decided to use *16* of them. 
+
+We had to change the column names of a few columns for a clear understanding of the variables during our analysis, and also had to change the way the data in many columns were reported to make it easier for us to work with.
+
+
+```{r echo = FALSE}
+crime2019 <- as.data.frame(fread("Crime_Data_from_2010_to_2019.csv", na.strings = c("NA", "X", "", "O", "-")))
+crime2020 <- as.data.frame(fread("Crime_Data_from_2020_to_Present.csv", na.strings = c("NA", "X", "", "O", "-")))
+
+crime = rbind(crime2019, crime2020)
+
+crime = crime %>% 
+  mutate(`Date Reported` = mdy_hms(`Date Rptd`),
+         `Date Occured` = mdy_hms(`DATE OCC`),
+         Year = year(`Date Reported`),
+         Month = month(`Date Reported`)) %>%
+  select(`Date Reported`, `Date Occured`, Year, everything()) %>% 
+  select(-(`Date Rptd`:`DATE OCC`)) %>% 
+  select(-`DR_NO`, -(`Rpt Dist No`:`Part 1-2`), -`Mocodes`, -(`Weapon Used Cd`:`Crm Cd 4`), -`Cross Street`, -`LOCATION`) %>% 
+  filter(Year != 2021)
+```
+
+
+Here are some important column definitions:
+
+- **`AREA NAME`**: There are 21 geographical or police patrol divisions in LA. The name of the area is associated with a landmark or surrounding community.
+- **`AREA`** Geographic area associated with the area name. They are numbered 1-21. 
+- **`Crm Cd Desc`**: Type of crime that is committed given the crime code. Many types of crimes have several sub categories like there are multiple types of assault and battery. 
+- **`Vict Descent`**: The ethnicity of the victim. Descent Code: A - Other Asian B - Black C - Chinese D - Cambodian F - Filipino G - Guamanian H - Hispanic/Latin/Mexican I - American Indian/Alaskan Native J - Japanese K - Korean L - Laotian O - Other P - Pacific Islander S - Samoan U - Hawaiian V - Vietnamese W - White X - Unknown Z - Asian Indian
+- **`Vict Sex`**: The gender of the victim, Male, Female, and unknown.
+- **`Vict Age`**: Age of the victim.
+- **`Date Occurred`**: The date that the crime happened.
+- **`Date Reported`**: The date that the crime was reported.
+- **`Time OCC`**: The time when the crime occurred.
+
+
+## Methods
+
+#### Handling of Missing Values
+
+The datasets we used had a lot of different ways of saying that a value is "*missing*", of which strings like  "NA", "X", "O", "-" and "" were some. We decided to use `na.strings` parameter in R using which we read all of these different types of missing values as `NA`s which helped us to simplify our analysis.
+
+#### Visualizations and Analysis
+
+For our visualizations we used the `ggplot2` package as we find it simple and easy to use,where we can play with many aesthetics to get clean outputs. To make our graphs more presentable in form of grids, we used the `cowplot` package. We decided which type of graph to display for each of our questions of interest by thinking about what would answer our question the best. In this project we look at a variety of graphs such as heatmaps, bar graphs and also line graphs.
+
+#### Predictions
+
+For predictions related to the type and number of crimes committed, we have used two models in our project. One is a [multiple linear regression](https://www.investopedia.com/terms/m/mlr.asp) model and the other is a [random forest](https://towardsdatascience.com/understanding-random-forest-58381e0602d2) model. We decided to choose these two methods as we think they were the most appropriate for the nature of our data and would also be the best for parameters we want to predict. Usage of Trees and Random forests also gave us the ability to use classification trees which helps us to predict the type of crime, which is a [categorical variable](https://en.wikipedia.org/wiki/Categorical_variable).
+
+
+## Analysis and Observations
+
+
+First let's look at the trend in the total crimes committed in Los Angeles over the years 2010 to 2020.
+
+```{r echo = FALSE}
+year.df = count(crime, crime["Year"])
+ggplot(year.df, aes(x = Year, y = n)) + geom_point() + geom_line(aes(x = Year, y = n, group = 1), color = "black", size = 2)+
+  labs(x = "Year", y = "Number of Crimes Recorded", title = "Number of Crimes Recorded Over Years 2010-2020")+ 
+  geom_point(aes(x = Year, y = n), color = "red", size = 2)+
+  scale_x_continuous(breaks = breaks_width(1))+
+  theme_bw()
+```
+
+It seems like in the past decade, number of crimes recorded in LA were the lowest in 2013, and then increased by $21\%$ by the year 2017, after which we again see a decline. The drop from 2019 to 2020 seems larger, which could be because of the COVID-19 pandemic.
+
+We decided to look at the top 3 committed crimes in Los Angeles and analyze those since they are the most frequently committed and it is thus important to control them.
+
+
+```{r echo = FALSE}
+kable(head(count(crime, crime["Crm Cd Desc"], sort = TRUE), 3)) %>% 
+  kable_classic(position = "center", full_width = FALSE,
+                bootstrap_options = c("condensed","striped"))
+```
+
+In this table we see that the three crimes are battery-simple assaults, vehicles being stolen and burglaries from vehicles. After doing some research about each of these we found out that the data combines battery(actual involvement of physical violence) and simple(verbal or physical threat of violence) assaults into one crime category: [Battery-Simple Assaults](https://www.ansaralaw.com/simple-assault-and-battery.html#:~:text=Simple%20assault%20is%20defined%20as,upon%20a%20person%20by%20another.).
+
+Before moving forward with these three crimes we wanted to look at some demographics like the victim race and see if the data we have is good enough for us to be able to analyze meaningfully. We look at the race of the victims based on the crime codes.
+
+```{r echo = FALSE, message = FALSE, warning = FALSE}
+relevant.crime = crime %>% filter(`Crm Cd Desc` %in% c("BATTERY - SIMPLE ASSAULT", "VEHICLE - STOLEN", "BURGLARY FROM VEHICLE")) %>% group_by(`Vict Descent`, `Crm Cd Desc`) %>% summarize(count = n()) %>% arrange(`Crm Cd Desc`) %>% pivot_wider(names_from = `Crm Cd Desc`, values_from = `count`) %>% 
+  kbl() %>% 
+  kable_classic(position = "center", full_width = FALSE,
+                bootstrap_options = c("condensed","striped"))
+relevant.crime
+```
+
+We found that for the crime `VEHICLE - STOLEN`, the data for the victim's race doesn't seem to have been recorded well, which may be due to some social-economic factors that we are unaware of, at the moment. Since this may lead to potential hurdles in our analysis and observations due to lack of data, we decided to look at the crime which interested us the most apart from these three, which was `ROBBERY`.
+
+```{r echo = FALSE, message = FALSE, warning = FALSE}
+relevant.crime = crime %>% filter(`Crm Cd Desc` %in% c("BATTERY - SIMPLE ASSAULT", "ROBBERY", "BURGLARY FROM VEHICLE")) %>% group_by(`Vict Descent`, `Crm Cd Desc`) %>% summarize(count = n()) %>% arrange(`Crm Cd Desc`) %>% pivot_wider(names_from = `Crm Cd Desc`, values_from = `count`) %>% 
+  kbl() %>% 
+  kable_classic(position = "center", full_width = FALSE,
+                bootstrap_options = c("condensed","striped"))
+relevant.crime
+```
+
+Now the three crimes seem to have abundant data for analysis using the victim's ethnic descent. But to streamline our observations to the most affected races by crimes, we decided to look at the top 3 races that we observe.
+
+```{r echo = FALSE, message=FALSE, warning=FALSE}
+top3.crimes = crime %>% filter(`Crm Cd Desc` %in% c("BATTERY - SIMPLE ASSAULT", "ROBBERY", "BURGLARY FROM VEHICLE")) %>% group_by(`Vict Descent`) %>% summarize(count = n()) %>% arrange(desc(count)) %>% head(3)
+kable(top3.crimes) %>% kable_classic(position = "center", full_width = FALSE,
+                bootstrap_options = c("condensed","striped"))
+```
+
+So for the rest of our analysis we will be looking at these three races: **H - Hispanic, W - White, and B - Black**
+
+
+We now look at the trends in the number of crimes of each type committed daily over the period of years being observed, along with all the crimes together to see a general trend.
+
+```{r warning = FALSE, echo = FALSE, message = FALSE}
+crime_daily <- crime %>%
+  mutate(`Date Reported` = as.Date(`Date Reported`, "%m/%d/%Y")) %>%
+  group_by(`Date Reported`) %>%
+  summarize(count = n()) %>%
+  arrange(`Date Reported`)
+ 
+p1 = ggplot(crime_daily, aes(x = `Date Reported`, y = count)) +
+  geom_line(color = "red", size = 0.1) +
+  geom_smooth(color = "black", se = FALSE) +
+  scale_x_continuous(breaks = breaks_width(1))+
+  scale_x_date(breaks = date_breaks("1 year"), labels = date_format("%Y")) +
+    labs(x = "Date of Crime", y = "Number of Crimes", title = "Daily Crimes in LA", subtitle = "2010-2020")+ 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+```{r warning = FALSE, echo = FALSE, message = FALSE}
+df_theft <- filter(crime, `Crm Cd` == 210)
+
+df_theft_daily <- df_theft %>%
+  mutate(`Date Reported` = as.Date(`Date Reported`, "%m/%d/%Y")) %>%
+  group_by(`Date Reported`) %>%
+  summarize(count = n()) %>%
+  arrange(`Date Reported`)
+ 
+p4 = ggplot(df_theft_daily, aes(x = `Date Reported`, y = count)) +
+  geom_line(color = "#F2CA27", size = 0.1) +
+  geom_smooth(color = "#1A1A1A", se = FALSE) +
+  scale_x_continuous(breaks = breaks_width(1))+
+  scale_x_date(breaks = date_breaks("1 year"), labels = date_format("%Y")) +
+    labs(x = "Date of Crime", y = "Number of Robberies", title = "Daily Robberies in LA", subtitle = "2010-2020")+ 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
+```{r warning = FALSE, echo = FALSE, message = FALSE}
+df_battery <- filter(crime, `Crm Cd` == 624)
+
+df_battery_daily <- df_battery %>%
+  mutate(`Date Reported` = as.Date(`Date Reported`, "%m/%d/%Y")) %>%
+  group_by(`Date Reported`) %>%
+  summarize(count = n()) %>%
+  arrange(`Date Reported`)
+ 
+p2 = ggplot(df_battery_daily, aes(x = `Date Reported`, y = count)) +
+  geom_line(color = "#F2CA27", size = 0.1) +
+  geom_smooth(color = "#1A1A1A", se = FALSE) +
+  scale_x_continuous(breaks = breaks_width(1))+
+  scale_x_date(breaks = date_breaks("1 year"), labels = date_format("%Y")) +
+    labs(x = "Date of Crime", y = "Number of Battery Simple Assaults", title = "Daily Battery Assaults in LA", subtitle = "2010-2020")+ 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+```{r warning = FALSE, echo = FALSE, message = FALSE}
+df_vehicle <- filter(crime, `Crm Cd` == 330)
+
+df_vehicle_daily <- df_vehicle %>%
+  mutate(`Date Reported` = as.Date(`Date Reported`, "%m/%d/%Y")) %>%
+  group_by(`Date Reported`) %>%
+  summarize(count = n()) %>%
+  arrange(`Date Reported`)
+ 
+p3 = ggplot(df_vehicle_daily, aes(x = `Date Reported`, y = count)) +
+  geom_line(color = "#F2CA27", size = 0.1) +
+  geom_smooth(color = "#1A1A1A", se = FALSE) +
+  scale_x_continuous(breaks = breaks_width(1))+
+  scale_x_date(breaks = date_breaks("1 year"), labels = date_format("%Y")) +
+    labs(x = "Date of Crime", y = "Number of Burglaries", title = "Daily Burglaries from Vehicles in LA", subtitle =  "2010-2020")+ 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+```{r fig.height=10, fig.width=10, warning = FALSE, message=FALSE, echo=FALSE}
+plot_grid(p1, p2, p3, p4)
+```
+
+From these graphs we observe that crimes in LA in general as well as each of these crimes in particular had a decreasing trend till the years in the 2014-2015 time period after which there was an increase with each crime peaking in the years of 2018-2019. This increase was however followed again by a decline, and all crimes in general seem to have a decreasing trend after that. Burglaries from vehicles in particular seems so have had a steep decline in the year of 2020.
+
+
+We believe that crimes victims are more likely to be in the youth and middle-aged bracket as it's unlikely that a very large number of crimes would be committed against small children as well as older people. Each of the crimes we're looking at, whether it's burglary from vehicle, assault or robbery, we feel that the these will be the most common victims. To see if our hypothesis is correct we will now look at the distribution of Sex of the Victims of once again both crimes in general and also the 3 crimes we're interested in looking at.
+
+We also use the victim's sex as a factor into consideration as it's possible that more crimes are committed against some age of a particular sex compared to the other.
+
+```{r warning = FALSE, echo = FALSE, message = FALSE}
+p1 = crime %>%
+  filter(!is.na(`Vict Age`) & `Vict Sex` %in% c('F', 'M')) %>%
+  filter(`Vict Age` != 0) %>% 
+  ggplot(aes(`Vict Age`, fill = `Vict Sex`)) + 
+  geom_histogram(alpha = 0.5, stat="density",position="identity") +
+  labs(x = "Victim's Age", y = "Density", 
+       title = "Distribution of Age by Sex",
+       subtitle = "For All Crimes in General",
+       fill = "Victim's Sex")  +  theme_bw()
+```
+
+
+```{r warning = FALSE, echo = FALSE, message = FALSE}
+p4 = df_theft %>%
+  filter(!is.na(`Vict Age`) & `Vict Sex` %in% c('F', 'M')) %>%
+  filter(`Vict Age` != 0) %>% 
+  ggplot(aes(`Vict Age`, fill = `Vict Sex`)) + 
+  geom_histogram(alpha = 0.5, stat="density",position="identity") +
+  labs(x = "Victim's Age", y = "Density", 
+       title = "Distribution of Age by Sex",
+       subtitle = "For Robberies",
+       fill = "Victim's Sex")  +  theme_bw()
+```
+
+```{r warning = FALSE, echo = FALSE, message = FALSE}
+p2 = df_battery %>%
+  filter(!is.na(`Vict Age`) & `Vict Sex` %in% c('F', 'M')) %>%
+  filter(`Vict Age` != 0) %>% 
+  ggplot(aes(`Vict Age`, fill = `Vict Sex`)) + 
+  geom_histogram(alpha = 0.5, stat="density",position="identity") +
+  labs(x = "Victim's Age", y = "Density", 
+       title = "Distribution of Age by Sex",
+       subtitle = "For Battery Simple Assaults",
+       fill = "Victim's Sex")  +  theme_bw()
+```
+
+```{r warning = FALSE, echo = FALSE, message = FALSE}
+p3 = df_vehicle %>%
+  filter(!is.na(`Vict Age`) & `Vict Sex` %in% c('F', 'M')) %>%
+  filter(`Vict Age` != 0) %>% 
+  ggplot(aes(`Vict Age`, fill = `Vict Sex`)) + 
+  geom_histogram(alpha = 0.5, stat="density",position="identity") +
+  labs(x = "Victim's Age", y = "Density", 
+       title = "Distribution of Age by Sex",
+       subtitle = "For Burglaries from Vehicles",
+       fill = "Victim's Sex")  +  theme_bw()
+```
+
+```{r fig.height=7.5, fig.width=7.5, warning = FALSE, message=FALSE, echo=FALSE}
+plot_grid(p1, p2, p3, p4)
+```
+
+
+From these density plots it's clear that all three crimes and crimes in general seem to have the largest victims in the youth and middle-aged category, i.e. from around the age of 20 to 50. The sex on the other hand doesn't seem to cause much of a difference, although for each case we look at, for the age group of around 25, females seem to be a victim of crimes more often than males.
+
+
+We were then curious to see if there is a possibility that some months of the years have a greater portion of the year's crimes being committed. What if the thieves found it hard to carry out robberies or burglaries from vehicles in the cold winter months in the hills of Hollywood area (xD).
+
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+get_hour <- function(x) {
+  return (as.numeric(as.integer(x/100)))
+}
+
+Winter = c('December', 'January', 'February')
+Spring = c('March', 'April', 'May')
+Summer = c('June', 'July', 'August')
+Autumn = c('September', 'October', 'November')
+crm_cds = c(510, 624, 330)
+
+crime_clean <- crime %>% 
+  mutate(`Date Occured`= as.Date(`Date Occured`, "%m/%d/%Y")) %>%
+  #filter(as.numeric(format(DATE OCC,'%Y'))==2020) %>%
+  mutate(HOUR = sapply(`TIME OCC`, get_hour),
+         MONTH = months(as.Date(`Date Occured`)),
+         `Date Occured` = as.numeric(format(`Date Occured`,'%d')),
+         SEASON = case_when(MONTH %in% Winter~"Winter",
+                            MONTH %in% Spring~"Spring",
+                            MONTH %in% Summer~"Summer",
+                            MONTH %in% Autumn~"Autumn")) %>% 
+  group_by(AREA,SEASON) %>% 
+  summarise(total = n())
+
+crime_clean$AREA <- factor(crime_clean$AREA)
+crime_clean$SEASON <- factor(crime_clean$SEASON)
+```
+
+
+```{r fig.width=12, fig.height=5, echo=FALSE, warning=FALSE, message=FALSE}
+crime_season=crime_clean %>% 
+  mutate(pct = total/sum(total), 
+         ypos = cumsum(total) - 0.5*total) 
+
+ggplot(data=crime_season, aes(x=AREA,y=total,fill=SEASON))+
+  geom_bar(stat="identity",position = position_stack(reverse = TRUE)) +
+  scale_y_continuous(labels = scales::comma)+
+  geom_text(aes(label = paste0(sprintf("%1.0f", pct*100),"%"), y = ypos), size = 3) +
+  labs(title="Total Number of Crimes Commited by Season and Area", y="Total Number of Crimes", x= "Area Code" )+
+  guides(fill=guide_legend(title="Season"))+
+  scale_fill_manual(values = c("#ffc3a0","#40e0d0", "#ffb6c1", "#fff68f"))
+```
+
+To our surprise we observed that crimes in each of the 21 areas of the city seem to be committed evenly across each season and there seems to be no particular area where the season is a deciding factor of the proportion of total crimes of the year being committed in a particular season.
+
+
+Usually the cities we live in have some areas where crimes are more common compared to others, which might be due to various factors like the population residing in that area, whether it's a minority or an urban neighborhood and how well equipped that area is with police force. So we wanted to look at the five areas with the most and least number of crimes being committed.
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+df.area = count(crime, crime["AREA NAME"]) %>% 
+  arrange(desc(n)) %>%
+  head(5)
+
+p1 = ggplot(df.area)+
+  geom_col(aes(x = `AREA NAME`, y = n), fill = "dodgerblue") +
+  labs(x = "Area Name", y = "Number of Crimes", title = "Top 5 Areas") + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1), legend.position = "none")
+```
+
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+df.area = count(crime, crime["AREA NAME"]) %>% 
+  arrange(desc(n)) %>%
+  tail(5)
+
+p2 = ggplot(df.area)+
+  geom_col(aes(x = `AREA NAME`, y = n), fill = "darkgreen") +
+  labs(x = "Area Name", y = "Number of Crimes", title = "Bottom 5 Areas") + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1), legend.position = "none")
+```
+
+```{r fig.height=5, fig.width=10, warning = FALSE, message=FALSE, echo=FALSE}
+plot_grid(p1, p2)
+```
+
+
+We see that while the areas of 77th Street and Southwest LA have the largest number of crimes reported, the areas Foothill and Hollenback have the least number of reported crimes over the years 2010-2020.
+
+
+We plot contour graphs on the map of LA to look at the distribution. 
+
+```{r echo = FALSE, message = FALSE, warning = FALSE}
+crime  %>% 
+  group_by(`AREA NAME`)%>%
+  select(`Crm Cd Desc`, `AREA NAME`) %>%
+   filter(`Crm Cd Desc` == 'BATTERY - SIMPLE ASSAULT') %>%
+  na.omit()  %>%
+  summarise(total= n()) %>% 
+  arrange(desc(total)) %>% 
+  kbl() %>% kable_classic(position = "center", full_width = FALSE,
+                bootstrap_options = c("condensed","striped"))
+  
+```
+
+```{r echo = FALSE, message = FALSE, warning = FALSE}
+register_google(key="AIzaSyBeqxw2FkmWOKvm8I_e3bkXiigKTP_HrKE")
+
+map_ofLA=qmap(location = "Los Angeles", zoom = 11)
+
+mapping <- crime %>%
+  select(`Crm Cd Desc`, `LAT`,`LON`, `AREA NAME`) %>%
+  filter(`Crm Cd Desc` == 'BATTERY - SIMPLE ASSAULT') %>%
+  na.omit()
+
+map_ofLA + geom_density_2d(aes(x = LON, y = LAT), data = mapping) +
+  stat_density2d(data = mapping, aes(x = LON, y = LAT, fill = ..level.., alpha = ..level..), size = 0.01, show.legend = TRUE, bins = 16, geom = "polygon") +
+  scale_fill_gradient(low = "green", high = "red") +
+  scale_alpha(range = c(0, 1),guide=FALSE)+labs(title = "Battery - Simple Assaults", subtitle = "In LA (2010-2020)")
+```
+
+We see that battery crimes seem to be extremely dense at the Central (16084 incidents) and 77th Street (16030 incidents) areas of LA as seen from the table. It looks like this type of crime mostly occurs only in one centered area in LA.This area could use increased policing for battery crimes.
+
+```{r echo = FALSE, message = FALSE, warning = FALSE}
+crime  %>% 
+  group_by(`AREA NAME`)%>%
+  select(`Crm Cd Desc`, `AREA NAME`) %>%
+   filter(`Crm Cd Desc` == 'BURGLARY FROM VEHICLE') %>%
+  na.omit()  %>%
+  summarise(total= n()) %>% 
+  arrange(desc(total)) %>% 
+  kbl() %>% kable_classic(position = "center", full_width = FALSE,
+                bootstrap_options = c("condensed","striped"))
+```
+
+```{r echo = FALSE, message = FALSE, warning = FALSE}
+register_google(key="AIzaSyBeqxw2FkmWOKvm8I_e3bkXiigKTP_HrKE")
+
+map_ofLA=qmap(location = "Los Angeles", zoom = 11)
+
+mapping <- crime %>%
+  select(`Crm Cd Desc`, `LAT`,`LON`, `AREA NAME`) %>%
+  filter(`Crm Cd Desc` == 'BURGLARY FROM VEHICLE') %>%
+  na.omit()
+
+map_ofLA + geom_density_2d(aes(x = LON, y = LAT), data = mapping) +
+  stat_density2d(data = mapping, aes(x = LON, y = LAT, fill = ..level.., alpha = ..level..), size = 0.01, show.legend = TRUE, bins = 16, geom = "polygon") +
+  scale_fill_gradient(low = "green", high = "red") +
+  scale_alpha(range = c(0, 1),guide=FALSE)+labs(title = "Burglaries from Vehicles", subtitle = "In LA (2010-2020)")
+```
+
+Unlike battery crimes, burglaries from vehicles seem to extend a greater area in LA. This crime has several hotspots, including N Hollywood (12882 incidents), Hollywood (10469 incidents) and Pacific (10202 incidents) as seen from the table. It is interesting to see that these hotspots are also major tourist areas.
+
+```{r echo = FALSE, message = FALSE, warning = FALSE}
+crime  %>% 
+  group_by(`AREA NAME`)%>%
+  select(`Crm Cd Desc`, `AREA NAME`) %>%
+   filter(`Crm Cd Desc` == 'ROBBERY') %>%
+  na.omit()  %>%
+  summarise(total= n()) %>% 
+  arrange(desc(total))%>% 
+  kbl() %>% kable_classic(position = "center", full_width = FALSE,
+                bootstrap_options = c("condensed","striped"))
+```
+
+```{r echo = FALSE, message = FALSE, warning = FALSE}
+register_google(key="AIzaSyBeqxw2FkmWOKvm8I_e3bkXiigKTP_HrKE")
+
+map_ofLA=qmap(location = "Los Angeles", zoom = 11)
+
+mapping <- crime %>%
+  select(`Crm Cd Desc`, `LAT`,`LON`, `AREA NAME`) %>%
+  filter(`Crm Cd Desc` == 'ROBBERY') %>%
+  na.omit()
+
+map_ofLA + geom_density_2d(aes(x = LON, y = LAT), data = mapping) +
+  stat_density2d(data = mapping, aes(x = LON, y = LAT, fill = ..level.., alpha = ..level..), size = 0.01, show.legend = TRUE, bins = 16, geom = "polygon") +
+  scale_fill_gradient(low = "green", high = "red") +
+  scale_alpha(range = c(0, 1),guide=FALSE)+labs(title = "Robberies", subtitle = "In LA (2010-2020)")
+```
+
+Robberies seem to extend a largest part of LA than battery, but lesser than burglaries from vehicles. 77th Street (11082) is once again a hotspot for this type of crime as seen from the table.
+
+
+Next we decided to look at the distribution of each of the three crimes by hour of the day. Maybe some crimes occur more often in the early part of the day while others occur more in the evening or night time. We look at heatmaps to help us analyze this. For the heatmaps, white(lighter) color indicates lesser number of crimes while red(brighter) color indicates a larger number of crimes committed in that time frame.
+
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+df_battery_time <- df_battery %>%
+  mutate(Hour = sapply(`TIME OCC`, get_hour)) %>%
+  group_by(DayOfWeek = weekdays(as.Date(`Date Reported`)), Hour) %>%
+  summarize(count = n())
+
+dow_format <- c("Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday")
+hour_format <- c(paste(c(12,1:11),"AM"), paste(c(12,1:11),"PM"))
+
+df_battery_time$DayOfWeek <- factor(df_battery_time$DayOfWeek, level = rev(dow_format))
+df_battery_time$Hour <- factor(df_battery_time$Hour, level = 0:23, label = hour_format)
+
+ggplot(df_battery_time, aes(x = Hour, y = DayOfWeek, fill = count)) +
+  geom_tile() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.6, size = 10), legend.title = element_blank(), legend.position="top", legend.direction="horizontal", legend.key.width=unit(2, "cm"), legend.key.height=unit(0.25, "cm"), legend.margin=unit(-0.5,"cm"), panel.margin=element_blank()) +
+  labs(x = "Hour of Battery Assault (Local Time)", y = "Day of the Week", title = "Battery Simple Assaults in LA", subtitle = "2010 – 2020 (By Time of Crime)") +
+  scale_fill_gradient(low = "white", high = "red", labels = comma)
+```
+
+For battery assaults, it seems like most occurrences are in the latter half of the day and most crimes seen to be happening on weekdays. On weekends, battery assaults seem to also occur in the early hours after midnight. In the early morning hours though(4am - 7am), there seem to much fewer number of battery assaults occurring.
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+df_vehicle_time <- df_vehicle %>%
+  mutate(Hour = sapply(`TIME OCC`, get_hour)) %>%
+  group_by(DayOfWeek = weekdays(as.Date(`Date Reported`)), Hour) %>%
+  summarize(count = n())
+
+dow_format <- c("Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday")
+hour_format <- c(paste(c(12,1:11),"AM"), paste(c(12,1:11),"PM"))
+
+df_vehicle_time$DayOfWeek <- factor(df_vehicle_time$DayOfWeek, level = rev(dow_format))
+df_vehicle_time$Hour <- factor(df_vehicle_time$Hour, level = 0:23, label = hour_format)
+
+ggplot(df_vehicle_time, aes(x = Hour, y = DayOfWeek, fill = count)) +
+  geom_tile() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.6), legend.title = element_blank(), legend.position="top", legend.direction="horizontal", legend.key.width=unit(2, "cm"), legend.key.height=unit(0.25, "cm"), legend.margin=unit(-0.5,"cm"), panel.margin=element_blank()) +
+  labs(x = "Hour of Burglary (Local Time)", y = "Day of the Week", title = "Burglaries from Vehicles in LA", subtitle =  "2010 – 2020 (By Time of Crime)") +
+  scale_fill_gradient(low = "white", high = "red", labels = comma)
+```
+
+For burglary from vehicles we see a very interesting pattern. It seems like most of the crimes of this type occur in the evening and night, once again concentrated mostly on weekdays. The other times of the day seem to have a low number of such crimes committed and again we see that the early morning hours have very few burglaries from vehicles.
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+df_theft_time <- df_theft %>%
+  mutate(Hour = sapply(`TIME OCC`, get_hour)) %>%
+  group_by(DayOfWeek = weekdays(as.Date(`Date Reported`)), Hour) %>%
+  summarize(count = n())
+
+dow_format <- c("Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday")
+hour_format <- c(paste(c(12,1:11),"AM"), paste(c(12,1:11),"PM"))
+
+df_theft_time$DayOfWeek <- factor(df_theft_time$DayOfWeek, level = rev(dow_format))
+df_theft_time$Hour <- factor(df_theft_time$Hour, level = 0:23, label = hour_format)
+
+ggplot(df_theft_time, aes(x = Hour, y = DayOfWeek, fill = count)) +
+  geom_tile() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.6), legend.title = element_blank(), legend.position="top", legend.direction="horizontal", legend.key.width=unit(2, "cm"), legend.key.height=unit(0.25, "cm"), legend.margin=unit(-0.5,"cm"), panel.margin=element_blank()) +
+  labs(x = "Hour of Robbery (Local Time)", y = "Day of the Week", title = "Robberies in LA", subtitle = "2010 – 2020 (By Time of Robbery)") +
+  scale_fill_gradient(low = "white", high = "red", labels = comma)
+```
+
+Finally looking at robberies, we see a pattern very similar to what we saw for battery and simple assaults. Most such crimes seem to be committed on weekdays during the latter half of the days (1 pm onward) and early hours after midnight on weekends. Once again, early morning hours have a lower number of such crimes being committed.
+
+Lastly, we want to see whether the three races of interest are affected in different numbers by crimes in general and particular crimes that we're looking at, and also how this trend has changed over the years.
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+vict_descent <- crime %>% 
+  group_by(`Vict Descent`) %>% 
+  summarise(total= n()) %>% 
+  arrange(desc(total)) %>% 
+  pull(`Vict Descent`)
+
+vict_descent <-  c(vict_descent[1:2], vict_descent[4])
+
+crime_descent = crime %>%
+  mutate(`Date Reported` = as.Date(`Date Reported`, "%m/%d/%Y")) %>%
+  filter(`Vict Descent` %in% vict_descent) %>% 
+  group_by(`Vict Descent`,`Date Reported`) %>%
+  summarise(total = n())
+
+p1 = ggplot(crime_descent, aes(x = `Date Reported`, y = total, color = `Vict Descent`)) +
+  geom_smooth(se = FALSE) +
+  scale_x_continuous(breaks = breaks_width(1))+
+  scale_x_date(breaks = date_breaks("1 year"), labels = date_format("%Y"))+
+  labs(y = "Number of Crimes",
+       title = "Daily Crimes in LA",
+       subtitle = "For All Crimes (2010-2020)")+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+vict_descent <- df_battery %>% 
+  group_by(`Vict Descent`) %>% 
+  summarise(total= n()) %>% 
+  arrange(desc(total)) %>% 
+  pull(`Vict Descent`)
+
+vict_descent <-  c(vict_descent[1:3])
+
+crime_descent = df_battery %>%
+  mutate(`Date Reported` = as.Date(`Date Reported`, "%m/%d/%Y")) %>%
+  filter(`Vict Descent` %in% vict_descent) %>% 
+  group_by(`Vict Descent`,`Date Reported`) %>%
+  summarise(total = n())
+
+p2 = ggplot(crime_descent, aes(x = `Date Reported`, y = total, color = `Vict Descent`)) +
+  geom_smooth(se = FALSE) +
+  scale_x_continuous(breaks = breaks_width(1))+
+  scale_x_date(breaks = date_breaks("1 year"), labels = date_format("%Y"))+
+  labs(y = "Number of Crimes",
+       title = "Daily Crimes in LA",
+       subtitle = "For Assaults (2010-2020)")+ 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+vict_descent <- df_vehicle %>% 
+  group_by(`Vict Descent`) %>% 
+  summarise(total= n()) %>% 
+  arrange(desc(total)) %>% 
+  pull(`Vict Descent`)
+
+vict_descent <-  c(vict_descent[1:2], vict_descent[4])
+
+crime_descent = df_vehicle %>%
+  mutate(`Date Reported` = as.Date(`Date Reported`, "%m/%d/%Y")) %>%
+  filter(`Vict Descent` %in% vict_descent) %>% 
+  group_by(`Vict Descent`,`Date Reported`) %>%
+  summarise(total = n())
+
+p3 = ggplot(crime_descent, aes(x = `Date Reported`, y = total, color = `Vict Descent`)) +
+  geom_smooth(se = FALSE) +
+  scale_x_continuous(breaks = breaks_width(1))+
+  scale_x_date(breaks = date_breaks("1 year"), labels = date_format("%Y"))+
+  labs(y = "Number of Crimes",
+       title = "Daily Crimes in LA",
+       subtitle = "For Burglaries from Vehicles (2010-2020)")+  
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+vict_descent <- df_theft %>% 
+  group_by(`Vict Descent`) %>% 
+  summarise(total= n()) %>% 
+  arrange(desc(total)) %>% 
+  pull(`Vict Descent`)
+
+vict_descent <-  c(vict_descent[1:2], vict_descent[4])
+
+crime_descent = df_theft %>%
+  mutate(`Date Reported` = as.Date(`Date Reported`, "%m/%d/%Y")) %>%
+  filter(`Vict Descent` %in% vict_descent) %>% 
+  group_by(`Vict Descent`,`Date Reported`) %>%
+  summarise(total = n())
+
+p4 = ggplot(crime_descent, aes(x = `Date Reported`, y = total, color = `Vict Descent`)) +
+  geom_smooth(se = FALSE) +
+  scale_x_continuous(breaks = breaks_width(1))+
+  scale_x_date(breaks = date_breaks("1 year"), labels = date_format("%Y"))+
+  labs(y = "Number of Crimes",
+       title = "Daily Crimes in LA",
+       subtitle = "For Robberies (2010-2020)")+  
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+```{r fig.width=10, fig.height=7.5, echo=FALSE, warning=FALSE, message=FALSE}
+plot_grid(p1, p2, p3, p4)
+```
+
+From these plots we see that for crimes in LA in general, Hispanic/Latino/Mexican people seem to be the highest victims, followed by the White and then Black. This trend has been consistent over the years of observation.
+
+We see a similar trend for battery-simple assaults but this time with Blacks being the victims more often than Whites, with the Hispanic/Latino/Mexican still at the top. Looking at the trends for recent years(2019 onward) it seems like Blacks and Whites are victims of assault almost to an equal extent.
+
+For burglaries from vehicles we see an interesting pattern where both the people of Hispanic/Latino/Mexican ethnicity as well as Whites seem to be the highest frequency victims of this crime, and while Whites remained below the Hispanics for most part since 2012, in the year 2020 both seem to be victimized to an equal extent.
+
+Lastly for robberies our trend is simple with the highest number of victims from the Hispanic/Latino/Mexican ethnicity followed by Blacks and then Whites, and this trend has remained constant over the years of observation.
+
+Now that we have looked at the various factors affecting crimes in LA, we look at a multiple linear regression model where we use Area and Season as predictor variables to predict the total number of crimes committed.
+
+Our multiple linear regression model gives us the following output:
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+crime_clean <- crime %>% 
+  mutate(`Date Occured`= as.Date(`Date Occured`, "%m/%d/%Y")) %>%
+  #filter(as.numeric(format(`DATE OCC`,'%Y'))==2020) %>%
+  mutate(HOUR = sapply(`TIME OCC`, get_hour),
+         MONTH = months(as.Date(`Date Occured`)),
+         `Date Occured` = as.numeric(format(`Date Occured`,'%d')),
+         SEASON = case_when(MONTH %in% Winter~"Winter",
+                            MONTH %in% Spring~"Spring",
+                            MONTH %in% Summer~"Summer",
+                            MONTH %in% Autumn~"Autumn")) %>% 
+  group_by(AREA,SEASON) %>% 
+  summarise(total = n())
+
+crime_clean$AREA <- factor(crime_clean$AREA)
+crime_clean$SEASON <- factor(crime_clean$SEASON)
+
+## 75% of the sample size
+smp_size <- floor(0.75 * nrow(crime_clean))
+
+## set the seed to make your partition reproducible
+set.seed(1)
+train_ind <- sample(seq_len(nrow(crime_clean)), size = smp_size)
+
+train <- crime_clean[train_ind, ]
+test <- crime_clean[-train_ind, ]
+
+fit <- lm(total ~ AREA+SEASON, data=train)
+summary(fit)
+# plot(fit)
+pred1 <- predict(fit, newdata = test)
+rmse <- sqrt(sum((exp(pred1) - test$total)^2)/length(test$total))
+# c(RMSE = rmse, R2=summary(fit)$r.squared)
+
+#everything we have here is correct, but in the interpretation talk about multiple testing correction. false positives and false negatives
+```
+
+After conducting the multiple linear regression model, it is evident that there are certain areas and seasons are significant in terms of predicting the total number crimes committed. By looking at the p-values, we can see that areas 2, 3, 4, 5, 7, 8, 10, 12, 14, 15, 16, 17, 18, 20, 21 all are significant. Among the four seasons, summer is significant. While performing a multiple linear regression on 20 or more predictors, it is important to consider the multiple testing error. There could be certain false positives as well as false negatives cases in our prediction and we address that using Bonferroni correction.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+p_vals = coef(summary(fit))[,4]
+print("p-Values before applying Bonferroni correction")
+p_vals
+print("p-Values after applying Bonferroni correction")
+p.adjust(p_vals, method = "bonferroni")
+```
+
+The method that we chose to use was the Bonferroni correction which showed us that there were some false positive areas. The areas that were false positive were, 17, 20, and 21. In our analysis, having false positives can be both beneficial and harmful depending on the scenario. Our overall purpose in performing the multiple linear regression was to predict the total number of crimes given the area and season. Increasing police presence in the areas that are significant will help increase public safety, however false positives may deplete important police resources.
+
+
+Next we use a random forest model to predict the type of crime committed (from the top three crimes that we are looking at) based on factors such as season, area code and hour of the day.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+crime_new <- crime %>% 
+  mutate(`Date Occured`= as.Date(`Date Occured`, "%m/%d/%Y")) %>%
+  mutate(HOUR = sapply(`TIME OCC`, get_hour),
+         MONTH = months(as.Date(`Date Occured`)),
+         `Date Occured` = as.numeric(format(`Date Occured`,'%d')),
+         SEASON = case_when(MONTH %in% Winter~"Winter",
+                            MONTH %in% Spring~"Spring",
+                            MONTH %in% Summer~"Summer",
+                            MONTH %in% Autumn~"Autumn")) %>% 
+  filter(`Crm Cd` %in% crm_cds) %>% 
+  rename(crm_code=`Crm Cd`,vict_age=`Vict Age`)%>%
+  select(AREA,crm_code,SEASON, HOUR)
+
+
+crime_new$AREA <- factor(crime_new$AREA)
+crime_new$SEASON <- factor(crime_new$SEASON)
+crime_new$crm_code <- factor(crime_new$crm_code)
+```
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+set.seed(1)
+train = sample (1:nrow(crime_new), nrow(crime_new)/2)
+tree.crime=tree(crm_code~., data=crime_new, subset=train)
+summary(tree.crime)
+
+rf = randomForest(formula = crm_code~., data = crime_new, mtry = 2, ntree = 100, importance = TRUE, subset = train)
+
+print(rf)
+
+
+importance(rf)
+```
+
+Our random forest model is not accurate at predicting crime type given season, area and hour. The model is currently classifying 44.47% accurately. The tree it self has many problems such as using only "AREA" when it is building the tree, since it is the most important variable. From the random forest OOB estimate error rate, it is around 55.53% which means our model is highly inaccurate. We do suspect the reason for this inaccuracy is due to having a small amount of trees in comparison to the size of our data set. We did not have enough computing capabilities to run a random forest model with a large number of trees. For a data set that as large as ours, it is necessary to have a random model with tree size of 500 or greater to have the most accuracy. In the future with larger computing capabilities, we do wish to improve the model by increasing tree size to 500 or greater.
+
+
+## Conclusion 
+
+> From our analysis, we found that factors such as area, victim's sex, victim's race, season, and hour have shown a relationship with the number of crimes committed and the types of crimes committed in Los Angeles. 
+
+> The overall trend of the number of crimes in LA have been decreasing since 2017. During the COVID-19 pandemic, crimes in LA plummeted significantly, by nearly 20,000. The top 3 types of crimes committed were battery-simple assault, vehicle-stolen, burglary from vehicle (we attempted to predict these in our random forest). The most targeted descent were hispanics. Typically women ages between 25-37 were targeted the most. In both areas 12 (77th Street) and 3(Southwest) have significantly high crime rates. In terms of seasons, summer seems to have the highest crime rate of around 26% across all areas. From the heatmaps, battery assaults seem to occur in the early hours after midnight on the weekdays. Burglaries from vehicles, seem to occur most often in the evening/night during weekdays. Robberies seem to occur weekdays 1pm onward and midnight to early hours on the weekends. 
+
+
+> Overall, there were definitely some short comings through our project analysis. One such was that the City of Los Angeles explicitly stated on their website regarding the data that there might be some inaccuracies in the records since the official police records were transcribed into the system. In our multiple linear regression there is a small possibility that we did not catch all of the false positives, however this is still beneficial to the the community as it will increase police patrols in a community that does not necessarily need it. On the other hand, false negatives such as an area with high crime showing less significance may be a bigger problem as it results in underpolicing. Another discrepancy would be the classification of the crime type since there are many overlapping descriptions (several types of thefts, assaults, and burgalaries). It would be more efficient to possibly categorize all of these larger crime types into one common crime type. There were columns such as victim age, victim descent, and victim sex which had significant amounts of missing data. This might have skewed our analyisis since we removed the missing values.
+
+>  For our future analysis, we would like to fix our multiple linear regression model to reduce and possibly identify all of if the false positives. In our random forest model, we would like to increase the number of trees to help generate a more accurate model. We would like to classify the type of crimes into more appropriate categories (like a general category for all assaults). In this analysis we did not explore both weapons and premises, but it is definitely an area we are extremely interested in. After more analysis is done about the factors that could have associations with crime rates, hopefully the police departments can implement plans to improve these factors to help increase public safety in LA!
+
+
+
+
+
